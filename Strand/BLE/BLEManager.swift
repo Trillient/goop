@@ -4021,10 +4021,17 @@ public final class BLEManager: NSObject, ObservableObject {
             log("Device-config read probe (#103) ignored — a probe is already walking its plan")
             return
         }
+        // Platform exception: this hardware investigation is explicitly scoped to macOS.
+        // Keep iOS and Android's established plans until the additional reads are verified there.
+        #if os(macOS)
+        let flagKeys = DeviceConfigReadProbe.knownFlagKeys(for: selectedModel.deviceFamily)
+        #else
+        let flagKeys = Whoop5Config.enableR22Sequence.map(\.name)
+        #endif
         deviceConfigReport = DeviceConfigReadProbeReport(
             family: selectedModel.deviceFamily,
-            // The flag names come from NOOP's own R22 sequence — never restated here.
-            knownFlagKeys: Whoop5Config.enableR22Sequence.map(\.name),
+            // Include names observed on the strap without changing the R22 write sequence.
+            knownFlagKeys: flagKeys,
             candidateKeys: DeviceConfigReadProbe.oxygenCandidateKeys)
         state.deviceConfigProbe = BLEManager.deviceConfigProbeWaiting
         log("Device-config read probe (#103): asking for config VALUES via GET_DEVICE_CONFIG_VALUE(121) + GET_FF_VALUE(128) on family=\(selectedModel.deviceFamily); read-only (SET_FF_VALUE/120 and SET_DEVICE_CONFIG_VALUE/119 are never sent from this path)")

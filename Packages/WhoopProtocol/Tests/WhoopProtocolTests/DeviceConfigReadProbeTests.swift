@@ -51,6 +51,24 @@ final class DeviceConfigReadProbeTests: XCTestCase {
 
     private var flagKeys: [String] { Whoop5Config.enableR22Sequence.map(\.name) }
 
+    func testObservedWhoop5FlagsAreReadWithoutExtendingTheWriteSequence() {
+        let keys = DeviceConfigReadProbe.knownFlagKeys(for: .whoop5)
+        var report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: keys,
+                                                 candidateKeys: [])
+        while let step = report.nextStep() {
+            XCTAssertTrue(DeviceConfigReadProbe.isReadOnlyOpcode(step.opcode))
+            report.noteReply(.init(resultCode: 1, record: echoRecord(step.key, value: 0x31)), for: step)
+        }
+        let flagReads = report.readings.filter { $0.opcode == DeviceConfigReadProbe.getFeatureFlagValueCmd }
+        XCTAssertEqual(flagReads.count, 20, "the complete hardware enumeration contained twenty names")
+        XCTAssertEqual(Set(flagReads.map(\.key)), Set(keys))
+        XCTAssertEqual(report.steps, 21, "one read per flag plus the existing device-config discovery")
+        XCTAssertEqual(flagKeys.count, 16, "the write sequence must not inherit read-only discoveries")
+        XCTAssertEqual(DeviceConfigReadProbe.knownFlagKeys(for: .whoop4), flagKeys)
+        XCTAssertTrue(report.render().contains("includes names observed in strap enumeration"))
+        XCTAssertFalse(report.render().contains("names NOOP already writes; values never read before"))
+    }
+
     // MARK: - The read-only allowlist (the hard safety constraint)
 
     func testAllowlistAdmitsOnlyTheTwoReadVerbs() {
@@ -140,6 +158,42 @@ final class DeviceConfigReadProbeTests: XCTestCase {
         XCTAssertTrue(r.isUnsupported)
         XCTAssertNil(r.value(for: "whatever"), "an UNSUPPORTED reply must never yield a value")
     }
+
+    #if os(macOS)
+    func testEchoedFailureBytesAreNotReportedAsStoredValues() {
+        // The live WHOOP 5 oxygen-key reads returned FAILURE with the requested key and zeroes.
+        for result in [UInt8(0), 2, 3] {
+            let frame = whoop5Response(cmd: 121,
+                                      payload: payload(result: result,
+                                                       record: echoRecord("enable_spo2", value: 0)))
+            guard case .success(let reply) = DeviceConfigReadProbe.parse(frame: frame, family: .whoop5,
+                                                                       expecting: 121) else {
+                return XCTFail("the response is valid framing even when the read failed")
+            }
+            var report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: [],
+                                                     candidateKeys: [])
+            report.noteReply(reply, for: .init(opcode: 121, key: "enable_spo2", group: .candidate))
+            XCTAssertEqual(reply.value(for: "enable_spo2"), 0, "the shared byte decoder remains unchanged")
+            XCTAssertNil(report.readings.first?.value)
+            if result == 3 {
+                XCTAssertEqual(report.verdict,
+                               "no read verb answered — GET_FF_VALUE(128) not asked; GET_DEVICE_CONFIG_VALUE(121) refused by firmware (UNSUPPORTED)")
+            } else {
+                XCTAssertEqual(report.verdict,
+                               "1 of 2 read verbs answered, but no reply reported success; no value is claimed")
+            }
+            XCTAssertFalse(report.render().contains("value=0x00"))
+        }
+    }
+
+    func testSuccessfulReplyWithoutAKeyValueHasADistinctVerdict() {
+        var report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: [], candidateKeys: [])
+        report.noteReply(.init(resultCode: 1, record: [1, 0]),
+                         for: .init(opcode: 128, key: "enable_r22_packets", group: .discovery))
+        XCTAssertEqual(report.verdict,
+                       "1 of 2 read verbs answered, but no successful reply carried a verified key/value pair; no value is claimed")
+    }
+    #endif
 
     func testNoValueIsClaimedWhenTheReplyDoesNotEchoTheKey() {
         // A plausible-looking record that simply isn't the key we asked for.

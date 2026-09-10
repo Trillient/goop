@@ -115,6 +115,25 @@ public enum DeviceConfigReadProbe {
     /// about the key.
     public static let deviceConfigDiscoveryKey = "whoop_live_hr_in_adv_ind_pkt"
 
+    /// Names to read, independent of the flags NOOP writes. The four extra WHOOP 5 keys were
+    /// returned by a complete 117/118 exchange on firmware 50.41.1.0. Their effects and accepted
+    /// values are unknown; observing a name does not authorize adding it to the enable sequence.
+    /// This macOS hardware investigation intentionally leaves mobile probe plans and decoding unchanged:
+    /// the requested scope and the available transport evidence are macOS plus this WHOOP 5 firmware.
+    /// Hardware check, 2026-09-10: all four GET_FF_VALUE replies were CRC-valid SUCCESS with ASCII
+    /// '2'. The full probe received 29 replies (21 successful, eight rejected guessed keys), with
+    /// no timeout or reconnect.
+    public static func knownFlagKeys(for family: DeviceFamily) -> [String] {
+        let existing = Whoop5Config.enableR22Sequence.map(\.name)
+        guard family == .whoop5 else { return existing }
+        return existing + [
+            "enable_r22_v9_packets",
+            "enable_frizzle_burst_mode",
+            "ir_1x_enable",
+            "enable_rocky2",
+        ]
+    }
+
     /// **GUESSES.** Candidate oxygen-related key names to try against the device-config namespace. None of
     /// these has been observed on a wire, in a capture, or in any protocol table — they are constructed
     /// from the naming conventions the *known* keys follow (`enable_…`, `…_enable`, snake_case, and the
@@ -453,7 +472,13 @@ public struct DeviceConfigReadProbeReport: Equatable, Sendable {
     /// Record one decoded reply.
     public mutating func noteReply(_ r: DeviceConfigReadProbe.ValueResponse, for step: Step) {
         setStatus(r.isUnsupported ? .unsupported : .answered, for: step.opcode)
+        #if os(macOS)
+        // The macOS hardware run returned FAILURE with an echoed key and zero padding. Keep the
+        // low-level cross-platform decoder intact; this scoped report must not claim a failed value.
+        let value = r.resultCode == nil || r.resultCode == 1 ? r.value(for: step.key) : nil
+        #else
         let value = r.value(for: step.key)
+        #endif
         readings.append(Reading(group: step.group, opcode: step.opcode, key: step.key, value: value,
                                 resultCode: r.resultCode, recordHex: r.recordHex))
         var line = "\(DeviceConfigReadProbeReport.opcodeLabel(step.opcode)) key=\"\(step.key)\""
@@ -541,7 +566,14 @@ public struct DeviceConfigReadProbeReport: Equatable, Sendable {
         }
         let named = readings.filter { $0.value != nil }.count
         if named == 0 {
+            #if os(macOS)
+            if readings.allSatisfy({ $0.resultCode != nil && $0.resultCode != 1 }) {
+                return "\(answered) of 2 read verbs answered, but no reply reported success; no value is claimed"
+            }
+            return "\(answered) of 2 read verbs answered, but no successful reply carried a verified key/value pair; no value is claimed"
+            #else
             return "\(answered) of 2 read verbs answered, but no reply echoed its key so no value is claimed"
+            #endif
         }
         return "\(answered) of 2 read verbs answered; read \(named) config value(s)"
     }
@@ -563,8 +595,12 @@ public struct DeviceConfigReadProbeReport: Equatable, Sendable {
         sb += section(.discovery,
                       title: "Discovery — one round-trip per verb against a key it should know",
                       empty: "(none — no reply was decoded)")
+        let writeNames = Set(Whoop5Config.enableR22Sequence.map(\.name))
+        let flagTitle = knownFlagKeys.allSatisfy(writeNames.contains)
+            ? "Known feature-flag values (names NOOP already writes; values never read before)"
+            : "Known feature-flag values (includes names observed in strap enumeration)"
         sb += section(.knownFlag,
-                      title: "Known feature-flag values (names NOOP already writes; values never read before)",
+                      title: flagTitle,
                       empty: "(none — the verb that would carry them did not answer)")
         sb += section(.candidate,
                       title: "Candidate oxygen keys — GUESSES, never observed on a wire or in any table",
