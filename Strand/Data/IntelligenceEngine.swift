@@ -1949,6 +1949,10 @@ final class IntelligenceEngine: ObservableObject {
             var daily = sleepEditedDaily(night.daily, detected: night.cachedSleep, editsByStart: editsByStart,
                                          habitualMidsleepSec: habitualMidsleepSec)
             daily = DayCycleIntelligenceIntegration.applying(physiologicalSteps, to: daily)
+            // Pass 1 has no seeded skin baseline. Score and explain the same deviation we persist.
+            let skinDev = recomputeSkinTempDev(night.nightlySkin, baselines2.skinTemp)
+            daily = daily.with(recovery: daily.recovery, skinTempDevC: skinDev,
+                               skinTempC: night.nightlySkin)
             let recovery = recomputeRecovery(daily, baselines2)
             // Charge term-breakdown trace (Group G): only when the Recovery test mode is on. Emits which
             // term moved Charge and which was nil and forced the renorm, tagged `.recovery`. The trace's
@@ -1956,7 +1960,6 @@ final class IntelligenceEngine: ObservableObject {
             if recoveryTraceActive {
                 for line in recoveryTraceLines(daily, baselines2) { diagnosticSink?(line, .recovery) }
             }
-            let skinDev = recomputeSkinTempDev(night.nightlySkin, baselines2.skinTemp)
             let source = DaySource.classify(day: daily.day, importedWhoopDays: importedWhoopDays,
                                             appleHealthDays: appleHealthDays)
             // SHARED CONTRACT enrichment: the ordered Charge driver list + the relative skin-temp marker,
