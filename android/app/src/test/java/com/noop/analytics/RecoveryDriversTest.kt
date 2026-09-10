@@ -276,4 +276,43 @@ class RecoveryDriversTest {
             rhrBaseline = null, respBaseline = null, sleepPerf = 0.9,
         ))
     }
+
+    @Test fun pass2SkinTempDeviationBeforeRecoveryScoring() {
+        val nightlySkinTempC = 34.8
+        val skinTempBaseline = baseline(34.5, 0.4, nValid = 14)
+        val hrvBaseline = baseline(50.0, 6.0, nValid = 14)
+        val skinTempDevC = nightlySkinTempC - skinTempBaseline.baseline
+        val hrv = 48.0
+        val rhr = 58.0
+
+        val scoreWithSkinDev = RecoveryScorer.recovery(
+            hrv = hrv, rhr = rhr, resp = null,
+            hrvBaseline = RecoveryScorer.DriverBaseline(hrvBaseline),
+            rhrBaseline = null, respBaseline = null,
+            sleepPerf = 0.85, skinTempDev = skinTempDevC,
+        )
+
+        val scoreWithoutSkinDev = RecoveryScorer.recovery(
+            hrv = hrv, rhr = rhr, resp = null,
+            hrvBaseline = RecoveryScorer.DriverBaseline(hrvBaseline),
+            rhrBaseline = null, respBaseline = null,
+            sleepPerf = 0.85, skinTempDev = null,
+        )
+
+        assertTrue("Charge with non-nil skinTempDev must be present", scoreWithSkinDev != null)
+        assertTrue("Charge without skinTempDev must be present", scoreWithoutSkinDev != null)
+        assertTrue(
+            "Charge with non-nil skinTempDev must differ from nil-deviation when deviation is non-trivial (0.3°C)",
+            scoreWithSkinDev != scoreWithoutSkinDev,
+        )
+
+        val drivers = RecoveryDrivers.chargeDrivers(
+            hrv = hrv, rhr = rhr, resp = null,
+            hrvBaseline = hrvBaseline, rhrBaseline = null, respBaseline = null,
+            sleepPerf = 0.85, skinTempDev = skinTempDevC,
+        )
+        val skinDriver = drivers.firstOrNull { it.label == ChargeDriverLabel.SKIN_TEMPERATURE }
+        assertTrue("Skin-temp driver must exist when deviation is non-nil", skinDriver != null)
+        assertEquals(skinTempDevC.toBits(), skinDriver!!.value.toBits())
+    }
 }
