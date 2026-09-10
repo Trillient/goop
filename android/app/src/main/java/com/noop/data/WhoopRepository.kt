@@ -1308,6 +1308,10 @@ class WhoopRepository(
         return com.noop.protocol.Whoop5RR.usesCanonicalSource(owner?.model, owner?.brand, tagged || unlabelledAliasOfWhoop5)
     }
 
+    /** The caller resolves WHOOP 5 ownership before using these legacy beats to explain missing HRV. */
+    suspend fun hasUnlabelledRr(deviceId: String, from: Long, to: Long): Boolean =
+        dao.hasUnlabelledRr(deviceId, from, to)
+
     /** Diagnostic export keeps all WHOOP transports and legacy values without scoring selection.
      * Existing quarantine and Oura SpO2-IBI exclusions still apply. */
     suspend fun rawRrIntervalsForDevice(deviceId: String, from: Long, to: Long,

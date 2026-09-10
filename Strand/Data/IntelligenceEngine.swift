@@ -197,6 +197,8 @@ final class IntelligenceEngine: ObservableObject {
         /// Persisted to metricSeries as "hrv_rr_overcount" (1/0) in pass 2 so the HRV card can flag the
         /// reading "unverified" until the de-dup fix lands. Same verdict the always-on `hrv diag` logs.
         let hrvOverCounted: Bool?
+        /// No selected in-sleep beats survived the WHOOP 5 legacy-unit exclusion.
+        let legacyRRExcluded: Bool
         /// #1169 SHADOW METRIC: the primary-session MEAN resting HR (PrimarySessionRestingHR, #1174) for this
         /// day, computed off the main actor beside the shipped nightly HR FLOOR (`daily.restingHr`). nil when
         /// no session clears the coverage gate. Written to metricSeries as "rhr_primary_session" in pass 2 —
@@ -1336,6 +1338,16 @@ final class IntelligenceEngine: ObservableObject {
                 // Byte-identical to the Kotlin line.
                 let sleepRrRows = rr.filter { r in res.cachedSleep.contains { r.ts >= $0.startTs && r.ts < $0.endTs } }
                 let sleepRr = sleepRrRows.map { Double($0.rrMs) }
+                var legacyRRExcluded = false
+                if strictWhoop5RR && sleepRr.isEmpty && res.daily.avgHrv == nil {
+                    for session in res.cachedSleep {
+                        if (try? await store.hasUnlabelledRR(deviceId: owner,
+                            from: session.startTs, to: session.endTs)) == true {
+                            legacyRRExcluded = true
+                            break
+                        }
+                    }
+                }
                 let hrvDiag: String?
                 let hrvOverCounted: Bool?   // #1118: nil = no in-sleep R-R (no HRV to caveat)
                 // #1331: the RSA gate's inputs, carried to the resp diagnostic below. Declared out here because
@@ -1589,6 +1601,7 @@ final class IntelligenceEngine: ObservableObject {
                                    hrvDiag: Self.mergedDayDiag(hrvDiag, strainDiagLines),
                                    spo2Candidate: spo2CandidateMean,
                                    hrvOverCounted: hrvOverCounted,
+                                   legacyRRExcluded: legacyRRExcluded,
                                    primarySessionRHR: primarySessionRHR,
                                    primarySessionRHRCoverage: primarySessionRHRCoverage)
                 // #1005: cache this freshly-scored scan under its per-day key (only when the day was
@@ -1669,6 +1682,7 @@ final class IntelligenceEngine: ObservableObject {
         // #1118: per-day HRV over-count flag, carried from pass 1 for metricSeries persistence. nil (absent)
         // for a night with no in-sleep R-R; otherwise true/false, so a re-score always overwrites the row.
         var hrvOverCountByDay: [String: Bool] = [:]
+        var legacyRRExcludedByDay: [String: Bool] = [:]
         // #1169: primary-session mean RHR shadow metric per day, carried from pass 1 for metricSeries persistence.
         var primarySessionRHRByDay: [String: Double] = [:]
         // #1169: its coverage inputs (valid-sample count + primary-session duration), same lifetime as the mean.
@@ -1679,6 +1693,7 @@ final class IntelligenceEngine: ObservableObject {
         // main actor was free during the heavy enumeration above.
         for scan in scanned {
             let res = scan.result
+            legacyRRExcludedByDay[res.daily.day] = scan.legacyRRExcluded
             readOwnerByDay[res.daily.day] = (scan.readOwner, scan.hrRows)
             resolvedScoreOwnerByDay[res.daily.day] = scan.readOwner
             nightlyHrvByDay[res.daily.day] = res.daily.avgHrv
@@ -2064,6 +2079,9 @@ final class IntelligenceEngine: ObservableObject {
             if let oc = hrvOverCountByDay[daily.day] {
                 restPoints.append(MetricPoint(day: daily.day, key: "hrv_rr_overcount", value: oc ? 1.0 : 0.0))
             }
+            // Write zero as well: a re-sync must clear an earlier explanation, including on cache hits.
+            restPoints.append(MetricPoint(day: daily.day, key: "hrv_rr_legacy_excluded",
+                value: legacyRRExcludedByDay[daily.day] == true && daily.avgHrv == nil ? 1.0 : 0.0))
             // #1169 shadow metric: the primary-session mean RHR, stored beside the shipped floor
             // (daily.restingHr) under the "-noop" computed ID. Instrumentation only — never shown, never
             // scored — so the mean-vs-floor comparison the issue needs can be evaluated from exports later.
@@ -2236,6 +2254,16 @@ final class IntelligenceEngine: ObservableObject {
         // resting HR, which the engine's computed-only `dailies` never carries). Captured here so the
         // Fitness Age gate can't be undercut by this pass's own scoring/eviction. Windowed to the range.
         let faPriorDaily = await repo.dailyMetrics(fromDay: oldestDay, toDay: newestDay)
+
+        // Clear skipped days in this computed source, without duplicating fresh scored evidence.
+        // The existing persistence transaction retains its guard for an entirely empty pass.
+        let legacyFlagDays = Set(restPoints.filter { $0.key == "hrv_rr_legacy_excluded" }.map(\.day))
+        for offset in 0..<maxDays {
+            let day = AnalyticsEngine.dayString(nowLocalMidnight - offset * 86_400, offsetSec: tzOffset)
+            if !legacyFlagDays.contains(day) {
+                restPoints.append(MetricPoint(day: day, key: "hrv_rr_legacy_excluded", value: 0))
+            }
+        }
 
         // Score provenance is metric-specific and lives outside dayOwnership (which remains solely a
         // resolver override). Persist scores + provenance atomically so a failed write can never label an

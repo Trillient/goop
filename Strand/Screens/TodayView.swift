@@ -2031,6 +2031,7 @@ struct TodayView: View {
     private var heroSection: some View {
         let d = displayDay
         let score = d?.recovery
+        let rrGapMessage = Whoop5RRGap.message(day: d, excludedDays: repo.legacyRRExcludedDays)
         VStack(alignment: .leading, spacing: NoopMetrics.gap) {
             // Recording status now lives as a colour-coded light in the header icon row, not a full-width
             // banner sandwiched above the rings. The three clean rings lead the screen directly.
@@ -2041,7 +2042,9 @@ struct TodayView: View {
             // BEFORE the generic Component-2 note (and on every day, not just today): unlike an ordinary
             // "missing data" gap, here the exact cause and the fix are known, so a past day gets the same
             // honest explanation rather than the usual silent bare ring.
-            if chargeDeepWindowGap {
+            if let rrGapMessage {
+                Whoop5RRGapNotice(message: rrGapMessage)
+            } else if chargeDeepWindowGap {
                 chargeDeepWindowGapNote
             } else if selectedDayOffset == 0 && !chargeScoreState.isCalibrating {
                 // Component 2, when Charge has no real today value, an explained state with its detail +
@@ -2061,7 +2064,7 @@ struct TodayView: View {
             // TODAY (a past day with no Charge is missing data, not mid-calibration).
             // #827: this repeats nightly through the calibration window, so it's dismissible into the inbox
             // (restorable) instead of nagging a returning user every day. Hidden once dismissed.
-            if selectedDayOffset == 0, !calibratingDismissed, let banked = recoveryCalibration {
+            if rrGapMessage == nil, selectedDayOffset == 0, !calibratingDismissed, let banked = recoveryCalibration {
                 chargeCalibrationCountdown(banked: banked)
                     // A small × tucks the calibration note into the Updates inbox (restorable from there).
                     .overlay(alignment: .topTrailing) {

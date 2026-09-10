@@ -337,7 +337,11 @@ struct LiquidTodayView: View {
                     // nothing and keeps its slot in the saved order.
                     ForEach(sectionOrder) { section in
                         switch section {
-                        case .hero: heroCard
+                        case .hero:
+                            VStack(alignment: .leading, spacing: NoopMetrics.space3) {
+                                heroCard
+                                if let rrGapMessage { Whoop5RRGapNotice(message: rrGapMessage) }
+                            }
                         case .liveSession: if liveSessionsBeta { liveSessionStartRow }
                         case .synthesis: synthesisSection
                         case .keyMetrics: keyMetricsSection
@@ -656,6 +660,10 @@ struct LiquidTodayView: View {
         }
         .buttonStyle(LiquidPressStyle())
         .accessibilityLabel("Start a live session. Beta. Silent strap coaching against today's Charge.")
+    }
+
+    private var rrGapMessage: String? {
+        Whoop5RRGap.message(day: displayDay, excludedDays: repo.legacyRRExcludedDays)
     }
 
     private var heroCard: some View {
@@ -1145,12 +1153,12 @@ struct LiquidTodayView: View {
                         // readiness one-liner here — the same swap classic makes (`calibrationDetail ??
                         // synthesisCardDetail`), so the count the short greeting pill can't carry lands in
                         // the card and both Today screens read identically.
-                        Text(chargeDisplay.calibrationDetail ?? synthLine)
+                        Text(rrGapMessage ?? chargeDisplay.calibrationDetail ?? synthLine)
                             .font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
                             .fixedSize(horizontal: false, vertical: true)
                         // The reason the count is not moving, when nights are arriving empty. Sits under
                         // the progress rather than replacing it: the wearer needs both the number and why.
-                        if let why = chargeDisplay.calibrationReason(
+                        if rrGapMessage == nil, let why = chargeDisplay.calibrationReason(
                             dayKeys: repo.days.map(\.day), nightlyHrv: repo.days.map(\.avgHrv),
                             today: Repository.logicalDayKey(Date())) {
                             Text(why).font(StrandFont.caption)

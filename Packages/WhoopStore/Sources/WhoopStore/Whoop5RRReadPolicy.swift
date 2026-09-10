@@ -2,6 +2,18 @@ import GRDB
 import WhoopProtocol
 
 extension WhoopStore {
+    /// Whether a sleep interval contains legacy beats whose units cannot be recovered. Callers
+    /// must establish the owner's WHOOP 5 policy before using this as a reason for missing HRV.
+    public func hasUnlabelledRR(deviceId: String, from: Int, to: Int) async throws -> Bool {
+        try syncRead { db in
+            try Bool.fetchOne(db, sql: """
+                SELECT EXISTS(SELECT 1 FROM rrInterval
+                WHERE deviceId = ? AND ts >= ? AND ts < ? AND srcChannel IS NULL
+                  AND (tsSuspect IS NULL OR tsSuspect <> 1))
+                """, arguments: [deviceId, from, to]) ?? false
+        }
+    }
+
     /// Shared by RR reads and consumers whose cached/union reads must obey the same owner policy.
     public func isWhoop5RRSource(deviceId: String, unlabelledAliasOfWhoop5: Bool = false) async throws -> Bool {
         try syncRead { try Self.isWhoop5RRSource(db: $0, deviceId: deviceId,

@@ -2741,4 +2741,5 @@
     <string name="l10n_today_screen_see_the_charge_trend_9dcbcff7">Ver a tendência da Carga</string>
     <string name="l10n_today_screen_every_day_s_score_over_time_a00ea7c7">A pontuação de cada dia, ao longo do tempo.</string>
     <string name="l10n_app_changelog_a_coach_that_keeps_the_thread_2ee52e0c">Um treinador que mantém o fio, a sua frequência cardíaca no ecrã principal e gráficos que afirmam menos</string>
+    <string name="whoop5_rr_legacy_gap">Os batimentos anteriores do WHOOP 5 não podem ser usados para calcular HRV ou Charge. Volta a sincronizar a pulseira para recuperar o histórico disponível.</string>
 </resources>

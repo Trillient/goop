@@ -1,6 +1,70 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Earlier WHOOP 5 beats cannot be scored for HRV or Charge. Re-sync your strap to recover available history.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Earlier WHOOP 5 beats cannot be scored for HRV or Charge. Re-sync your strap to recover available history."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Frühere WHOOP 5-Herzschläge können nicht für HRV oder Charge ausgewertet werden. Synchronisiere dein Band erneut, um verfügbare Verlaufsdaten wiederherzustellen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los latidos anteriores de WHOOP 5 no se pueden usar para calcular HRV o Charge. Vuelve a sincronizar tu pulsera para recuperar el historial disponible."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les anciens battements WHOOP 5 ne peuvent pas servir au calcul de HRV ou de Charge. Resynchronisez votre bracelet pour récupérer les données historiques disponibles."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "I battiti precedenti di WHOOP 5 non possono essere usati per calcolare HRV o Charge. Sincronizza di nuovo il bracciale per recuperare la cronologia disponibile."
+          }
+        },
+        "pt-PT": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Os batimentos anteriores do WHOOP 5 não podem ser usados para calcular HRV ou Charge. Volta a sincronizar a pulseira para recuperar o histórico disponível."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wcześniejsze uderzenia serca z WHOOP 5 nie mogą służyć do obliczania HRV ani Charge. Zsynchronizuj ponownie opaskę, aby odzyskać dostępną historię."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Прежние данные об ударах сердца WHOOP 5 нельзя использовать для расчёта HRV или Charge. Синхронизируйте браслет заново, чтобы восстановить доступную историю."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "早期的 WHOOP 5 心搏数据无法用于计算 HRV 或 Charge。请重新同步手环，以恢复仍可获取的历史数据。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "早期的 WHOOP 5 心搏資料無法用於計算 HRV 或 Charge。請重新同步手環，以恢復仍可取得的歷史資料。"
+          }
+        }
+      }
+    },
     "Heart rate, no reading": { "localizations": {
       "de": { "stringUnit": { "state": "translated", "value": "Herzfrequenz, keine Messung" } }, "en": { "stringUnit": { "state": "translated", "value": "Heart rate, no reading" } }, "es": { "stringUnit": { "state": "translated", "value": "Frecuencia cardíaca, sin lectura" } }, "fr": { "stringUnit": { "state": "translated", "value": "Fréquence cardiaque, aucune mesure" } }, "it": { "stringUnit": { "state": "translated", "value": "Frequenza cardiaca, nessuna lettura" } }, "pl": { "stringUnit": { "state": "translated", "value": "Tętno, brak odczytu" } }, "pt-PT": { "stringUnit": { "state": "translated", "value": "Frequência cardíaca, sem leitura" } }, "ru": { "stringUnit": { "state": "translated", "value": "Пульс, нет данных" } }, "zh-Hans": { "stringUnit": { "state": "translated", "value": "心率，无读数" } }, "zh-Hant": { "stringUnit": { "state": "translated", "value": "心率，無讀數" } }
     } },

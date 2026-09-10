@@ -4,6 +4,27 @@ import WhoopProtocol
 @testable import WhoopStore
 
 final class Whoop5RRStoreTests: XCTestCase {
+    func testLegacyGapEvidenceExcludesSuspectTimestampsAndTheSleepEnd() async throws {
+        let store = try await WhoopStore.inMemory()
+        _ = try await store.insert(Streams(rr: [
+            RRInterval(ts: 100, rrMs: 900),
+            RRInterval(ts: 200, rrMs: 900),
+            RRInterval(ts: 300, rrMs: 900),
+            RRInterval(ts: 400, rrMs: 900, srcChannel: .whoop5Historical)
+        ]), deviceId: "five")
+        try await store.registryWriter.write { db in
+            try db.execute(sql: "UPDATE rrInterval SET tsSuspect = 1 WHERE ts = 200")
+        }
+        let inside = try await store.hasUnlabelledRR(deviceId: "five", from: 100, to: 200)
+        let suspectOnly = try await store.hasUnlabelledRR(deviceId: "five", from: 101, to: 300)
+        let labelled = try await store.hasUnlabelledRR(deviceId: "five", from: 400, to: 500)
+        let otherOwner = try await store.hasUnlabelledRR(deviceId: "other", from: 0, to: 500)
+        XCTAssertTrue(inside)
+        XCTAssertFalse(suspectOnly)
+        XCTAssertFalse(labelled)
+        XCTAssertFalse(otherOwner)
+    }
+
     private let id = "my-whoop"
     private func registry(_ store: WhoopStore, model: String, brand: String = "WHOOP") throws {
         try store.registryWriter.write { db in

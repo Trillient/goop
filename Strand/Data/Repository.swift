@@ -195,6 +195,8 @@ final class Repository: ObservableObject {
     /// Daily metric rows with source provenance, used by vital-sign surfaces that need honest
     /// "WHOOP import / NOOP computed / Apple Health" captions instead of a silent merged row.
     @Published private(set) var vitalRows: [SourcedDailyMetric] = []
+    /// Scored nights missing HRV because their WHOOP 5 beats have unproven legacy units.
+    @Published private(set) var legacyRRExcludedDays: Set<String> = []
     /// Monotonic counter bumped on every successful `refresh()`. Intraday-updating views key their
     /// data load on this so they reload when fresh strap data lands , `today?.day` alone is a stable
     /// date string within a day and would freeze e.g. the Today HR trend until the date rolls over.
@@ -905,6 +907,14 @@ final class Repository: ObservableObject {
         let activityFile = (try? await store.dailyMetrics(deviceId: Self.activityFileSource, from: fromDay, to: toDay)) ?? []
         let impSleep = await unionSleepSessions(store: store, from: lo, to: hi)
         let compSleep = await unionComputedSleepSessions(store: store, from: lo, to: hi)
+        var legacyRRFlags: [String: Double] = [:]
+        for id in computedReadIds.reversed() {
+            for point in (try? await store.metricSeries(deviceId: id, key: "hrv_rr_legacy_excluded",
+                from: fromDay, to: toDay)) ?? [] {
+                legacyRRFlags[point.day] = point.value
+            }
+        }
+        let legacyRRDays = Set(legacyRRFlags.filter { $0.value == 1 }.map(\.key))
 
         // Export-verbatim sleep figures (long-format metricSeries rows from WhoopImporter).
         // SleepView prefers these per day over its APPROXIMATE recomputations.
@@ -953,6 +963,7 @@ final class Repository: ObservableObject {
             && merged.importedSleep == importedSleep
             && merged.vitalRows == vitalRows
             && merged.freshness == freshness
+            && legacyRRDays == legacyRRExcludedDays
         guard !unchanged else { return }
 
         // One consistent publish per refresh: assign every cache, flip `loaded`, then bump `refreshSeq` so
@@ -961,6 +972,7 @@ final class Repository: ObservableObject {
         self.days = merged.days
         self.sleeps = merged.sleeps
         self.vitalRows = merged.vitalRows
+        self.legacyRRExcludedDays = legacyRRDays
         self.freshness = merged.freshness
         self.loaded = true
         // Drop the Explorer's cross-catalog memo rather than leaving it to be evicted lazily by a key

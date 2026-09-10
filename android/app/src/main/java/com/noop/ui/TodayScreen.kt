@@ -983,6 +983,8 @@ fun TodayScreen(
     // Recovery cold-start: recovery is null until the HRV baseline crosses the seed gate
     // (Baselines.minNightsSeed valid nights). Show honest "calibrating, N of 4 nights" progress
     // instead of a bare "No Data" so a new BLE-only user knows scores are coming, not broken. (PR #85)
+    val legacyRRExcludedDays by viewModel.legacyRRExcludedDays.collectAsStateWithLifecycle()
+    val rrGapMessage = Whoop5RRGap.message(displayMetric, legacyRRExcludedDays)
     val recoveryCalibration: Int? = if (selectedDayOffset == 0) {
         // Thread the persisted "Recalibrate HRV baseline" epoch (0 = none) so N folds the SAME
         // epoch-aware history the recovery engine folds — otherwise a post-recalibration user's pre-epoch
@@ -1362,7 +1364,7 @@ fun TodayScreen(
             // matching iOS explainedScoreNote. Today only; never a fabricated value.
             //
             // #827: NeedsStrap ALWAYS shows (a today-blocking state, not a recurring nag).
-            if (selectedDayOffset == 0 && scoreState is ScoreState.NeedsStrap) {
+            if (rrGapMessage == null && selectedDayOffset == 0 && scoreState is ScoreState.NeedsStrap) {
                 ScoreStateNote(scoreState)
             }
             // The carried "Latest sleep · <date>" / "Last night · <date>" note. iOS has NOTHING in this slot,
@@ -1394,7 +1396,7 @@ fun TodayScreen(
             }
             // #827: the dismissible calibrating note. Hidden once dismissed into the inbox; a "Restore to
             // Today" tap there flips calibratingDismissed back via the shared restore path above.
-            if (selectedDayOffset == 0 && scoreState is ScoreState.Calibrating && !calibratingDismissed) {
+            if (rrGapMessage == null && selectedDayOffset == 0 && scoreState is ScoreState.Calibrating && !calibratingDismissed) {
                 Box(modifier = Modifier.fillMaxWidth()) {
                     ScoreStateNote(
                         scoreState,
@@ -1534,6 +1536,11 @@ fun TodayScreen(
                                     ),
                                     onOpenMetric = onOpenMetric,
                                 )
+                            }
+                            rrGapMessage?.let { message ->
+                                Text(stringResource(message), style = NoopType.subhead,
+                                    color = Palette.textSecondary,
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = Metrics.space12))
                             }
                             // Honest "why is Effort 0?" caption — only when today's Effort is a real
                             // near-zero (HR present but never crossed the cardio zone). Effort accrues over

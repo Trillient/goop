@@ -782,6 +782,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }.flowOn(Dispatchers.IO)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
+    /** Observe the persisted explanation itself: its flag can clear while daily values stay null. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val legacyRRExcludedDays: StateFlow<Set<String>> = activeStrapIdFlow
+        .map { effectiveActiveStrapId(it, deviceId) }
+        .distinctUntilChanged()
+        .flatMapLatest { activeId ->
+            repository.metricSeriesComputedUnionFlow(activeId, "hrv_rr_legacy_excluded", "0000-01-01", "9999-12-31")
+                .map { rows -> rows.filter { it.value == 1.0 }.map { it.day }.toSet() }
+        }
+        .flowOn(Dispatchers.IO)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
     /**
      * #386 self-heal: a "kick" the app-resume hook sends to wake the 15-min analyze loop early, so an
      * OEM-killed overnight re-score tick catches up the moment the user opens NOOP instead of showing a

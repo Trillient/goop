@@ -129,6 +129,7 @@ object IntelligenceEngine {
         val primaryRhrCoverage: PrimarySessionRestingHR.Coverage?,
         val spo2Candidate: Int?,
         val hrvOverCount: Boolean?,
+        val legacyRRExcluded: Boolean,
         val diagLines: List<String>,
         /** #1575: the per-day trace lines for each channel, replayed on a hit so an active trace no
          *  longer forces a full re-read + re-score of every night on every pass. Empty when those modes
@@ -726,6 +727,7 @@ object IntelligenceEngine {
         // #1118: per-day HRV over-count flag, carried for metricSeries persistence. Absent for a night with
         // no in-sleep R-R (no HRV to caveat); otherwise true/false, so a re-score always overwrites the row.
         val hrvOverCountByDay = LinkedHashMap<String, Boolean>()
+        val legacyRRExcludedByDay = LinkedHashMap<String, Boolean>()
         // #1169: primary-session mean RHR shadow metric per day, carried from pass 1 for persistence.
         val primarySessionRHRByDay = LinkedHashMap<String, Double>()
         // #1169: its coverage inputs (valid-sample count + primary-session duration), same lifetime as the mean.
@@ -949,6 +951,7 @@ object IntelligenceEngine {
                     // matching the loop's own guard).
                     if (universalSink != null) readOwnerByDay[day] = OwnerRead(cached.owner, cached.hrRows)
                     cached.hrvOverCount?.let { hrvOverCountByDay[day] = it }
+                    legacyRRExcludedByDay[day] = cached.legacyRRExcluded
                     nightlyHrvByDay[day] = cached.res.daily.avgHrv
                     nightlyRhrByDay[day] = cached.res.daily.restingHr?.toDouble()
                     nightlySkinByDay[day] = cached.res.nightlySkinTempC
@@ -1382,15 +1385,10 @@ object IntelligenceEngine {
             // choice. null on a WHOOP 4.0 (no v18 aux stream) with no candidate decode, an Oura night with
             // no in-window plausible sample, or when the toggle is OFF. Persisted to metricSeries as
             // "spo2_candidate" in pass 2, never to `spo2Pct`.
-            if (spo2CandidateDisplay) {
-                // Lifted into [spo2CandidateMean] rather than inlined: `analyzeRecentOnCpu` sits within ~100
-                // bytes of the JVM's 64 KB per-method ceiling, and this block plus the #1575 trace recorders
-                // put the JaCoCo-instrumented size 30 bytes OVER the budget #1524 guards. Neither change
-                // exceeded it alone — only together, which no single PR's CI could see.
-                spo2CandidateMean(repo, owner, res.sleepSessions, spo2, from, to)?.let {
-                    spo2CandidateByDay[res.daily.day] = it
-                }
-            }
+            val auxiliary = nightAuxiliaryInputs(repo, owner, res, sleepRr.isEmpty(),
+                activeWhoop5RR, spo2CandidateDisplay, spo2, from, to)
+            legacyRRExcludedByDay[day] = auxiliary.legacyRRExcluded
+            auxiliary.spo2Candidate?.let { spo2CandidateByDay[res.daily.day] = it }
             // #1169 SHADOW METRIC (instrumentation only): the primary-session MEAN resting HR, recorded
             // beside the shipped nightly HR FLOOR (daily.restingHr = min per session) so the mean-vs-floor
             // comparison the issue asks for accrues on real devices. NEVER shown and NEVER fed to any score;
@@ -1414,7 +1412,8 @@ object IntelligenceEngine {
                 dayScanCache[day] = CachedDayScan(
                     key = key, res = res, owner = owner, hrRows = hr.size,
                     primaryRhr = primaryRhr, primaryRhrCoverage = primaryRhrCoverage,
-                    spo2Candidate = spo2CandidateByDay[day], hrvOverCount = hrvOverCountByDay[day],
+                    spo2Candidate = auxiliary.spo2Candidate, hrvOverCount = hrvOverCountByDay[day],
+                    legacyRRExcluded = auxiliary.legacyRRExcluded,
                     diagLines = dayDiagLines.toList(),
                     traces = dayTraces,
                 )
@@ -1635,33 +1634,10 @@ object IntelligenceEngine {
                 for (line in recoveryTraceLines(daily, baselines2)) recoveryTraceSink(line)
             }
             val skinTempDevC = recomputeSkinTempDev(res.nightlySkinTempC, baselines2.skinTemp)
-            RestScorer.restFromDaily(daily)?.let { rest ->
-                restRows.add(MetricSeriesRow(deviceId = computedId, day = daily.day, key = "sleep_performance", value = rest))
-            }
-            // #103: persist the SpO₂ candidate @82 nightly mean to metricSeries as "spo2_candidate" so the
-            // Blood Oxygen tile can surface it as a "strap estimate (unverified)" fallback when the toggle
-            // is ON. Written under the "-noop" computed device ID, never to `spo2Pct`.
-            spo2CandidateByDay[daily.day]?.let { cand ->
-                restRows.add(MetricSeriesRow(deviceId = computedId, day = daily.day, key = "spo2_candidate", value = cand.toDouble()))
-            }
-            // #1118: persist the HRV over-count flag (1/0) so the HRV card can mark an over-counted 4.0
-            // night's reading "unverified" until the two-channel de-dup lands. 0 written on a clean night
-            // (not just absent) so a night that flips clean on re-score clears its prior flag.
-            hrvOverCountByDay[daily.day]?.let { oc ->
-                restRows.add(MetricSeriesRow(deviceId = computedId, day = daily.day, key = "hrv_rr_overcount", value = if (oc) 1.0 else 0.0))
-            }
-            // #1169 shadow metric: the primary-session mean RHR, stored beside the shipped floor
-            // (daily.restingHr) under the "-noop" computed ID. Instrumentation only — never shown, never
-            // scored — for later mean-vs-floor evaluation from exports.
-            primarySessionRHRByDay[daily.day]?.let { v ->
-                restRows.add(MetricSeriesRow(deviceId = computedId, day = daily.day, key = "rhr_primary_session", value = v))
-            }
-            // #1169: its coverage inputs beside the mean — valid-sample count + primary-session duration (s)
-            // — so a thin-coverage night can be down-weighted in the later holdout. Raw inputs, not a fraction.
-            primarySessionRHRCoverageByDay[daily.day]?.let { cov ->
-                restRows.add(MetricSeriesRow(deviceId = computedId, day = daily.day, key = "rhr_primary_session_valid_samples", value = cov.validSamples.toDouble()))
-                restRows.add(MetricSeriesRow(deviceId = computedId, day = daily.day, key = "rhr_primary_session_duration_s", value = cov.durationSec))
-            }
+            appendNightlyMetricRows(restRows, computedId, daily,
+                spo2CandidateByDay[daily.day], hrvOverCountByDay[daily.day],
+                legacyRRExcludedByDay[daily.day] == true, primarySessionRHRByDay[daily.day],
+                primarySessionRHRCoverageByDay[daily.day])
 
             out.add(
                 Computed(
@@ -1907,6 +1883,7 @@ object IntelligenceEngine {
         // this only fills the days the strap collected but no import covered.
         // Persist metric-level input provenance in the SAME Room transaction. dayOwnership remains
         // exclusively a resolver override, and a failed write can never relabel an older score.
+        restRows.addAll(legacyGapDefaults(computedId, nowLocalMidnight, tzOffsetSeconds, maxDays, restRows))
         val computedWindow = IntelligencePersistence.prepareComputedWindow(
             repo, importedDeviceId, computedId, oldestDay, newestDay, dailies, restRows, physiologicalSteps,
             candidatePriorities, resolvedScoreOwnerByDay,
@@ -2860,6 +2837,67 @@ object IntelligenceEngine {
     private suspend fun activeWhoop5RrPolicy(
         repo: com.noop.data.WhoopRepository, candidates: List<Pair<String, Int>>, fallback: String,
     ): Boolean = repo.isWhoop5RrSource(candidates.firstOrNull { it.second == 0 }?.first ?: fallback)
+
+    /** Clear skipped days only. The persistence planner keeps the first row for each key, so defaults
+     * must never duplicate fresh scored evidence. The existing transaction guards an entirely empty pass. */
+    private fun legacyGapDefaults(
+        computedId: String, midnight: Long, offset: Long, maxDays: Int, rows: List<MetricSeriesRow>,
+    ): List<MetricSeriesRow> {
+        val scored = rows.filter { it.key == "hrv_rr_legacy_excluded" }.map { it.day }.toSet()
+        return (0 until maxDays).map { dayOffset ->
+            MetricSeriesRow(deviceId = computedId,
+                day = AnalyticsEngine.dayString(midnight - dayOffset * SECONDS_PER_DAY, offset),
+                key = "hrv_rr_legacy_excluded", value = 0.0)
+        }.filter { it.day !in scored }
+    }
+
+    /** Persist nightly auxiliary values outside the scoring coroutine's instrumentation budget.
+     * Zero flags overwrite earlier notices; shadow measurements never feed Charge. */
+    private fun appendNightlyMetricRows(
+        rows: MutableList<MetricSeriesRow>, computedId: String, daily: DailyMetric,
+        spo2Candidate: Int?, hrvOverCount: Boolean?, legacyRRExcluded: Boolean,
+        primaryRhr: Double?, primaryCoverage: PrimarySessionRestingHR.Coverage?,
+    ) {
+        fun append(key: String, value: Double) {
+            rows.add(MetricSeriesRow(deviceId = computedId, day = daily.day, key = key, value = value))
+        }
+        RestScorer.restFromDaily(daily)?.let { append("sleep_performance", it) }
+        spo2Candidate?.let { append("spo2_candidate", it.toDouble()) }
+        hrvOverCount?.let { append("hrv_rr_overcount", if (it) 1.0 else 0.0) }
+        append("hrv_rr_legacy_excluded", if (legacyRRExcluded && daily.avgHrv == null) 1.0 else 0.0)
+        primaryRhr?.let { append("rhr_primary_session", it) }
+        primaryCoverage?.let {
+            append("rhr_primary_session_valid_samples", it.validSamples.toDouble())
+            append("rhr_primary_session_duration_s", it.durationSec)
+        }
+    }
+
+    private data class NightAuxiliary(val legacyRRExcluded: Boolean, val spo2Candidate: Int?)
+
+    /** Keep the nightly evidence reads in one coroutine call, preserving the scoring method's budget.
+     * The optional SpO2 capture remains gated; neither value feeds the recovery formula. */
+    private suspend fun nightAuxiliaryInputs(
+        repo: WhoopRepository, owner: String, result: DayResult, noSleepRr: Boolean,
+        activeWhoop5RR: Boolean, spo2CandidateDisplay: Boolean,
+        spo2: List<com.noop.data.Spo2Sample>, from: Long, to: Long,
+    ): NightAuxiliary = NightAuxiliary(
+        legacyRRExcluded(repo, owner, result, noSleepRr,
+            activeWhoop5RR && owner == WhoopRepository.WHOOP_SOURCE),
+        if (spo2CandidateDisplay) spo2CandidateMean(repo, owner, result.sleepSessions, spo2, from, to) else null,
+    )
+
+    /** Attribute an empty HRV window only to legacy beats actually present in its scored sleep. */
+    private suspend fun legacyRRExcluded(
+        repo: com.noop.data.WhoopRepository, owner: String, result: DayResult,
+        noSleepRr: Boolean, unlabelledAliasOfWhoop5: Boolean,
+    ): Boolean {
+        if (!noSleepRr || result.daily.avgHrv != null ||
+            !repo.isWhoop5RrSource(owner, unlabelledAliasOfWhoop5)) return false
+        for (session in result.sleepSessions) {
+            if (repo.hasUnlabelledRr(owner, session.start, session.end)) return true
+        }
+        return false
+    }
 
     /** Keep both stream witnesses and the R-R alias policy in the nightly cache key (#29).
      * The two database awaits live here to preserve the scoring method's instrumentation budget. */

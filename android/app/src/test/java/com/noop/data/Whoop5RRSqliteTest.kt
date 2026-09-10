@@ -8,6 +8,8 @@ import com.noop.analytics.IntelligenceEngine
 import com.noop.analytics.RegistryDayOwnerSource
 import com.noop.analytics.SleepStageHealer
 import com.noop.analytics.StageSegment
+import com.noop.ui.Whoop5RRGap
+import com.noop.R
 import java.io.StringWriter
 import java.lang.reflect.Proxy
 import java.sql.Connection
@@ -29,6 +31,7 @@ class Whoop5RRSqliteTest {
     private val owners = linkedMapOf<String, PairedDeviceRow>()
     private val sleeps = linkedMapOf<Pair<String, Long>, SleepSession>()
     private val days = linkedMapOf<Pair<String, String>, DailyMetric>()
+    private val metrics = linkedMapOf<Triple<String, String, String>, MetricSeriesRow>()
     private val gravity = mutableListOf<GravitySample>()
     private val id = "my-whoop"
 
@@ -82,7 +85,14 @@ class Whoop5RRSqliteTest {
                     if (sleeps.putIfAbsent(row.deviceId to row.startTs, row) == null) 1L else -1L
                 }
                 "replaceComputedScoreWindow" -> {
-                    (args[3] as List<*>).filterIsInstance<DailyMetric>().forEach { days[it.deviceId to it.day] = it }
+                    val freshDays = (args[3] as List<*>).filterIsInstance<DailyMetric>()
+                    if (freshDays.isNotEmpty()) {
+                        days.entries.removeIf { (key, _) -> key.first == args[0] && key.second in (args[1] as String)..(args[2] as String) }
+                        freshDays.forEach { days[it.deviceId to it.day] = it }
+                        (args[4] as List<*>).filterIsInstance<MetricSeriesRow>().forEach {
+                            metrics[Triple(it.deviceId, it.day, it.key)] = it
+                        }
+                    }
                     Unit
                 }
                 "upsertMetricSeries", "upsertMetricSeriesWithProvenance", "deleteWorkoutsBySport" -> Unit
@@ -111,6 +121,8 @@ class Whoop5RRSqliteTest {
                     RrInterval(r.getString("deviceId"), r.getLong("ts"), r.getInt("rrMs"), r.getInt("seq"),
                         r.getInt("synced"), optional("ord"), optional("srcChannel"), optional("tsSuspect"))
                 }
+                "hasUnlabelledRr" -> query(HAS_UNLABELLED_RR_SQL,
+                    listOf("deviceId", "from", "to").zip(args.take(3)).toMap()) { it.getInt(1) != 0 }.single()
                 "hasWhoop5RrSource" -> query(HAS_WHOOP5_RR_SOURCE_SQL, mapOf("deviceId" to args[0])) {
                     it.getBoolean(1)
                 }.single()
@@ -172,10 +184,31 @@ class Whoop5RRSqliteTest {
     private suspend fun read(from: Long = 0, to: Long = 1000, limit: Int = 100) =
         repo.rrIntervalsForDevice(id, from, to, limit)
 
+    private fun excludedDays(): Set<String> = metrics.values
+        .filter { it.key == "hrv_rr_legacy_excluded" && it.value == 1.0 }.map { it.day }.toSet()
+
+    private fun seedBaseline(before: String, owner: String = id) {
+        for (offset in 1L..8L) {
+            val day = java.time.LocalDate.parse(before).minusDays(offset).toString()
+            days[owner to day] = DailyMetric(deviceId = owner, day = day, totalSleepMin = 480.0,
+                efficiency = 0.9, restingHr = 60, avgHrv = 40.0 + offset % 3, recovery = 60.0)
+        }
+    }
+
     @Test fun sourceFingerprintQueriesUseCoveringIndex() {
         val plan = query("EXPLAIN QUERY PLAN $ANALYSIS_FINGERPRINT_SQL") { it.getString("detail") }
         assertEquals(3, plan.count { it.contains("USING COVERING INDEX rrInterval_source_suspect") })
         assertFalse(plan.any { it.contains("SCAN rrInterval") })
+    }
+
+    @Test fun legacyGapEvidenceExcludesSuspectTimestampsAndTheSleepEnd() = runBlocking {
+        repo.insert(StreamBatch(rr = listOf(RrRow(100, 900), RrRow(200, 900), RrRow(300, 900),
+            RrRow(400, 900, RrSourceChannel.WHOOP5_HISTORICAL))), id)
+        sql("UPDATE rrInterval SET tsSuspect = 1 WHERE ts = 200")
+        assertTrue(repo.hasUnlabelledRr(id, 100, 200))
+        assertFalse(repo.hasUnlabelledRr(id, 101, 300))
+        assertFalse(repo.hasUnlabelledRr(id, 400, 500))
+        assertFalse(repo.hasUnlabelledRr("other", 0, 500))
     }
 
     @Test fun actualNightlyScorerGuardsCanonicalHistoryAfterRePairing() = runBlocking {
@@ -186,6 +219,7 @@ class Whoop5RRSqliteTest {
         val offset = java.util.TimeZone.getDefault().getOffset(now * 1000L) / 1000L
         val end = now - Math.floorMod(now + offset, 86_400L)
         val start = end - 3_600L
+        seedBaseline(AnalyticsEngine.dayString(end, offset), owner = "new-five")
         repo.insert(StreamBatch(
             hr = (start until end).map { HrRow(it, 60) },
             rr = (start until end).map { RrRow(it, if (it % 2L == 0L) 980 else 1020) },
@@ -204,6 +238,9 @@ class Whoop5RRSqliteTest {
         assertEquals(60, first.rhr)
         assertNull("unlabelled canonical history must not supply HRV after re-pairing", first.hrv)
         assertNull(days.getValue("new-five-noop" to first.day).avgHrv)
+        assertNull("an established baseline cannot score Charge without HRV", first.recovery)
+        assertEquals(R.string.whoop5_rr_legacy_gap,
+            Whoop5RRGap.message(days.getValue("new-five-noop" to first.day), excludedDays()))
 
         // Same rows, same timestamps, same engine cache: only source provenance changes.
         assertEquals(0, repo.insert(StreamBatch(rr = (start until end).map {
@@ -212,7 +249,70 @@ class Whoop5RRSqliteTest {
         val promoted = score().single()
         assertEquals(40.0, promoted.hrv!!, 0.001)
         assertEquals(promoted.hrv, days.getValue("new-five-noop" to first.day).avgHrv)
+        assertNotNull("Charge returns with valid HRV and its seeded baseline", promoted.recovery)
+        assertFalse("source promotion must clear the persisted notice", first.day in excludedDays())
+        assertNull(Whoop5RRGap.message(days.getValue("new-five-noop" to first.day), excludedDays()))
         assertEquals(promoted.hrv, score().single().hrv)
+        assertFalse("a cache hit must not revive the notice", first.day in excludedDays())
+    }
+
+    @Test fun legacyGapDoesNotExplainUnaffectedDaysOrImportedValues() {
+        val empty = DailyMetric(deviceId = id, day = "2026-09-09", totalSleepMin = 480.0, restingHr = 60)
+        assertNull(Whoop5RRGap.message(null, setOf(empty.day)))
+        assertNull("ordinary calibration has no legacy evidence", Whoop5RRGap.message(empty, emptySet()))
+        assertNull(Whoop5RRGap.message(empty, setOf("2026-09-08")))
+        assertNull(Whoop5RRGap.message(empty.copy(recovery = 60.0), setOf(empty.day)))
+        assertNull("valid HRV with an unseeded baseline is ordinary calibration",
+            Whoop5RRGap.message(empty.copy(avgHrv = 40.0), setOf(empty.day)))
+    }
+
+    @Test fun skippedDayClearsItsOldExplanationWithoutTouchingOtherSources() = runBlocking {
+        val now = 1_780_272_000L
+        val offset = java.util.TimeZone.getDefault().getOffset(now * 1000L) / 1000L
+        val previousDay = AnalyticsEngine.dayString(now - 2 * 86_400L, offset)
+        val key = "hrv_rr_legacy_excluded"
+        for (source in listOf("$id-noop", "other-noop")) {
+            metrics[Triple(source, previousDay, key)] = MetricSeriesRow(source, previousDay, key, 1.0)
+        }
+        suspend fun score() = IntelligenceEngine.analyzeRecent(repo, maxDays = 3, importedDeviceId = id,
+            nowSeconds = now, dayCycleMode = DayCycleMode.MIDNIGHT)
+        score()
+        assertEquals(1.0, metrics.getValue(Triple("$id-noop", previousDay, key)).value, 0.0)
+        repo.insert(StreamBatch(hr = (now - 400 until now).map { HrRow(it, 60) }), id)
+        score()
+        assertEquals(0.0, metrics.getValue(Triple("$id-noop", previousDay, key)).value, 0.0)
+        assertEquals(1.0, metrics.getValue(Triple("other-noop", previousDay, key)).value, 0.0)
+    }
+
+    @Test fun actualWhoop4LegacyNightKeepsScoresWithoutExplanation() = runBlocking {
+        val owner = "four"
+        registry("4.0", owner = owner)
+        activate(owner)
+        val now = 1_780_272_000L
+        val offset = java.util.TimeZone.getDefault().getOffset(now * 1000L) / 1000L
+        val end = now - Math.floorMod(now + offset, 86_400L)
+        val start = end - 3_600L
+        seedBaseline(AnalyticsEngine.dayString(end, offset))
+        repo.insert(StreamBatch(hr = (start until end).map { HrRow(it, 60) }), owner)
+        repo.upsertSleepSessions(listOf(SleepSession(deviceId = owner, startTs = start, endTs = end,
+            efficiency = 1.0, stagesJSON = AnalyticsEngine.encodeStages(listOf(StageSegment(start, end, "light"))))))
+        val registry = DeviceRegistry(dao, object : DeviceRegistry.Transactor {
+            override suspend fun <R> run(block: suspend () -> R): R = block()
+        })
+        suspend fun score() = IntelligenceEngine.analyzeRecent(repo, maxDays = 1, importedDeviceId = id,
+            nowSeconds = now, ownerSource = RegistryDayOwnerSource(registry), dayCycleMode = DayCycleMode.MIDNIGHT).single()
+        val empty = score()
+        assertNull(empty.hrv)
+        assertNull(empty.recovery)
+        assertNull(Whoop5RRGap.message(days.getValue("$id-noop" to empty.day), excludedDays()))
+        repo.insert(StreamBatch(rr = (start until end).map {
+            RrRow(it, if (it % 2L == 0L) 980 else 1020)
+        }), owner)
+        val scored = score()
+        assertEquals(40.0, scored.hrv!!, 0.001)
+        assertNotNull(scored.recovery)
+        assertTrue(excludedDays().isEmpty())
+        assertNull(Whoop5RRGap.message(days.getValue("$id-noop" to scored.day), excludedDays()))
     }
 
     @Test fun ordinaryRrReadsAndFingerprintsFollowActiveAliasPolicy() = runBlocking {

@@ -101,6 +101,10 @@ internal const val WHOOP5_RR_INTERVALS_SQL =
 internal const val HAS_WHOOP5_RR_SOURCE_SQL =
     "SELECT EXISTS(SELECT 1 FROM rrInterval WHERE deviceId = :deviceId AND srcChannel IN (5, 6, 7))"
 
+internal const val HAS_UNLABELLED_RR_SQL =
+    "SELECT EXISTS(SELECT 1 FROM rrInterval WHERE deviceId = :deviceId AND ts >= :from AND ts < :to " +
+    "AND srcChannel IS NULL AND (tsSuspect IS NULL OR tsSuspect <> 1))"
+
 internal const val PROMOTE_WHOOP5_RR_SOURCE_SQL =
     "UPDATE rrInterval SET srcChannel = :source, ord = :ord " +
     "WHERE deviceId = :deviceId AND ts = :ts AND rrMs = :rrMs AND seq = :seq " +
@@ -560,6 +564,10 @@ interface WhoopDao : DeviceRegistryDao {
 
     @Query(HAS_WHOOP5_RR_SOURCE_SQL)
     suspend fun hasWhoop5RrSource(deviceId: String): Boolean
+
+    /** Legacy beats inside one sleep interval; suspect timestamps cannot explain a score gap. */
+    @Query(HAS_UNLABELLED_RR_SQL)
+    suspend fun hasUnlabelledRr(deviceId: String, from: Long, to: Long): Boolean
 
     /** Newly observed canonical source wins exact-key collisions: history > standard > native/legacy. */
     @Query(PROMOTE_WHOOP5_RR_SOURCE_SQL)
