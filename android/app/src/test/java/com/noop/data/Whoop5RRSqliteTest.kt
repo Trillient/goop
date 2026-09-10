@@ -1,5 +1,6 @@
 package com.noop.data
 
+import com.noop.protocol.Whoop5RR
 import com.noop.protocol.RrSourceChannel
 import com.noop.ingest.RawSensorExport
 import com.noop.analytics.AnalyticsEngine
@@ -176,6 +177,91 @@ class Whoop5RRSqliteTest {
     }
     private suspend fun read(from: Long = 0, to: Long = 1000, limit: Int = 100) =
         repo.rrIntervalsForDevice(id, from, to, limit)
+
+    private fun seedBaseline(before: String) {
+        for (offset in 1L..8L) {
+            val day = java.time.LocalDate.parse(before).minusDays(offset).toString()
+            days[id to day] = DailyMetric(deviceId = id, day = day, totalSleepMin = 480.0,
+                efficiency = 0.9, restingHr = 60, avgHrv = 40.0 + offset % 3, recovery = 60.0)
+        }
+    }
+
+    // The same persisted row and production SQL inputs consumed by the Today explanation.
+    private suspend fun showsLegacyGap(row: DailyMetric, owner: String): Boolean {
+        fun dayKey(ts: Long?) = ts?.let {
+            java.time.LocalDate.ofInstant(java.time.Instant.ofEpochSecond(it),
+                java.time.ZoneId.systemDefault()).toString()
+        }
+        return row.recovery == null && Whoop5RR.legacyUnscorableNight(
+            strictWhoop5 = repo.isWhoop5RrSource(owner), day = row.day,
+            firstRecordedDay = dayKey(repo.firstRecordedRrTs(owner)),
+            firstScorableDay = dayKey(repo.firstScorableWhoop5RrTs(owner)),
+            avgHrv = row.avgHrv, totalSleepMin = row.totalSleepMin,
+        )
+    }
+
+    private suspend fun assertLegacyGapScoringLifecycle(model: String, expectsLegacyGap: Boolean) {
+        val owner = "physical-strap"
+        registry(model, owner = owner)
+        activate(owner)
+        val now = 1_780_272_000L
+        val offset = java.util.TimeZone.getDefault().getOffset(now * 1000L) / 1000L
+        val end = now - Math.floorMod(now + offset, 86_400L)
+        val start = end - 3_600L
+        seedBaseline(AnalyticsEngine.dayString(end, offset))
+        repo.insert(StreamBatch(hr = (start until end).map { HrRow(it, 60) }), owner)
+        repo.upsertSleepSessions(listOf(SleepSession(deviceId = owner, startTs = start, endTs = end,
+            efficiency = 1.0, stagesJSON = AnalyticsEngine.encodeStages(listOf(StageSegment(start, end, "light"))))))
+        val registry = DeviceRegistry(dao, object : DeviceRegistry.Transactor {
+            override suspend fun <R> run(block: suspend () -> R): R = block()
+        })
+        suspend fun score(): DailyMetric {
+            val computed = IntelligenceEngine.analyzeRecent(repo, maxDays = 1, importedDeviceId = id,
+                nowSeconds = now, ownerSource = RegistryDayOwnerSource(registry), dayCycleMode = DayCycleMode.MIDNIGHT).single()
+            return days.getValue("$id-noop" to computed.day)
+        }
+
+        val noBeats = score()
+        assertTrue((noBeats.totalSleepMin ?: 0.0) > 0.0)
+        assertNull(noBeats.avgHrv)
+        assertNull(noBeats.recovery)
+        assertFalse("ordinary missing beats are not legacy units", showsLegacyGap(noBeats, owner))
+
+        val legacyRr = (start until end).map { RrRow(it, if (it % 2L == 0L) 980 else 1020) }
+        repo.insert(StreamBatch(rr = legacyRr), owner)
+        val legacy = score()
+        assertEquals(expectsLegacyGap, showsLegacyGap(legacy, owner))
+        if (expectsLegacyGap) {
+            assertNull(legacy.avgHrv)
+            assertNull("a seeded baseline cannot supply missing nightly HRV", legacy.recovery)
+            // Keep the same unlabelled-era bounds: valid HRV alone must rule out this cause.
+            assertFalse("valid HRV without Charge is ordinary calibration",
+                showsLegacyGap(legacy.copy(avgHrv = 40.0), owner))
+            assertEquals(0, repo.insert(StreamBatch(rr = legacyRr.map {
+                it.copy(srcChannel = RrSourceChannel.WHOOP5_HISTORICAL)
+            }), owner).rr)
+        } else {
+            assertEquals(40.0, legacy.avgHrv!!, 0.001)
+            assertNotNull(legacy.recovery)
+        }
+
+        val restored = score()
+        assertEquals(40.0, restored.avgHrv!!, 0.001)
+        assertNotNull(restored.recovery)
+        assertFalse(showsLegacyGap(restored, owner))
+        val idle = score()
+        assertEquals(restored.avgHrv, idle.avgHrv)
+        assertEquals(restored.recovery, idle.recovery)
+        assertFalse("a cache hit must not revive the explanation", showsLegacyGap(idle, owner))
+    }
+
+    @Test fun actualWhoop5GapClearsAfterSourcePromotion() = runBlocking {
+        assertLegacyGapScoringLifecycle("5.0 MG", expectsLegacyGap = true)
+    }
+
+    @Test fun actualWhoop4LegacyNightKeepsScoresWithoutExplanation() = runBlocking {
+        assertLegacyGapScoringLifecycle("4.0", expectsLegacyGap = false)
+    }
 
     /** The date the "this night cannot be scored" explanation names comes from this query, so it has to
      *  agree with what scoring actually accepts: labelled transports only, suspect stamps excluded, and

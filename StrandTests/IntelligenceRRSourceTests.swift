@@ -45,6 +45,87 @@ final class IntelligenceRRSourceTests: XCTestCase {
             sourceKind: .liveBLE, capabilities: [.hr, .hrv], status: .active, addedAt: 2, lastSeenAt: 2))
     }
 
+    private func seedBaseline(_ store: WhoopStore, before day: String) async throws {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let date = try XCTUnwrap(formatter.date(from: day))
+        let history = (1...8).map { offset in
+            DailyMetric(day: formatter.string(from: date.addingTimeInterval(-Double(offset) * 86_400)),
+                totalSleepMin: 480, efficiency: 0.9, deepMin: 90, remMin: 90, lightMin: 300,
+                disturbances: 0, restingHr: 60, avgHrv: 32 + Double(offset % 3), recovery: 60,
+                strain: nil, exerciseCount: nil)
+        }
+        _ = try await store.upsertDailyMetrics(history, deviceId: canonical)
+    }
+
+    // The same persisted row and store queries the Today explanation consumes.
+    private func showsLegacyGap(_ day: DailyMetric, store: WhoopStore, owner: String) async throws -> Bool {
+        func dayKey(_ ts: Int?) -> String? {
+            ts.map { Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval($0))) }
+        }
+        let strict = try await store.isWhoop5RRSource(deviceId: owner)
+        let firstRecorded = try await store.firstRecordedRRTimestamp(deviceId: owner)
+        let firstScorable = try await store.firstScorableWhoop5RRTimestamp(deviceId: owner)
+        return day.recovery == nil && Whoop5RR.legacyUnscorableNight(
+            strictWhoop5: strict, day: day.day, firstRecordedDay: dayKey(firstRecorded),
+            firstScorableDay: dayKey(firstScorable), avgHrv: day.avgHrv, totalSleepMin: day.totalSleepMin)
+    }
+
+    func testLegacyGapAppearsForMissingScoresAndClearsAfterSourcePromotion() async throws {
+        try await withPreferences {
+            let store = try await WhoopStore.inMemory()
+            try register(DeviceRegistryStore(dbQueue: store.registryWriter), canonicalModel: "WHOOP")
+            let input = night()
+            try await seedBaseline(store, before: input.day)
+            _ = try await store.insert(Streams(hr: input.hr), deviceId: active)
+            let repo = Repository(deviceId: active)
+            repo.setStoreForTesting(store)
+            let engine = IntelligenceEngine(repo: repo, profile: ProfileStore(), deviceId: canonical)
+            func score() async throws -> DailyMetric {
+                await engine.analyzeRecent(maxDays: 2, force: true)
+                let rows = try await store.dailyMetrics(deviceId: canonical + "-noop", from: input.day, to: input.day)
+                return try XCTUnwrap(rows.first)
+            }
+
+            let noBeats = try await score()
+            XCTAssertGreaterThan(noBeats.totalSleepMin ?? 0, 0)
+            XCTAssertNil(noBeats.avgHrv)
+            XCTAssertNil(noBeats.recovery)
+            let noBeatsGap = try await showsLegacyGap(noBeats, store: store, owner: active)
+            XCTAssertFalse(noBeatsGap, "ordinary missing beats must not be blamed on legacy units")
+
+            _ = try await store.insert(Streams(rr: input.rr), deviceId: active)
+            let legacy = try await score()
+            XCTAssertNil(legacy.avgHrv)
+            XCTAssertNil(legacy.recovery, "a seeded baseline cannot supply the missing nightly HRV")
+            let legacyGap = try await showsLegacyGap(legacy, store: store, owner: active)
+            XCTAssertTrue(legacyGap, "the scored legacy night must reach the shipped explanation predicate")
+
+            // Keep the unlabelled-era bounds unchanged: valid displayed HRV alone must rule out this cause.
+            let calibrating = DailyMetric(day: legacy.day, totalSleepMin: legacy.totalSleepMin,
+                efficiency: legacy.efficiency, deepMin: legacy.deepMin, remMin: legacy.remMin,
+                lightMin: legacy.lightMin, disturbances: legacy.disturbances, restingHr: legacy.restingHr,
+                avgHrv: 40, recovery: nil, strain: legacy.strain, exerciseCount: legacy.exerciseCount)
+            let calibrationGap = try await showsLegacyGap(calibrating, store: store, owner: active)
+            XCTAssertFalse(calibrationGap, "valid HRV without Charge is ordinary calibration")
+
+            let tagged = input.rr.map { RRInterval(ts: $0.ts, rrMs: $0.rrMs, srcChannel: .whoop5Historical) }
+            let inserted = try await store.insert(Streams(rr: tagged), deviceId: active)
+            XCTAssertEqual(inserted.rr, 0, "re-offload changes only source provenance, not row count")
+            let restored = try await score()
+            XCTAssertGreaterThan(try XCTUnwrap(restored.avgHrv), 0)
+            XCTAssertNotNil(restored.recovery)
+            let restoredGap = try await showsLegacyGap(restored, store: store, owner: active)
+            XCTAssertFalse(restoredGap)
+            let idle = try await score()
+            XCTAssertEqual(idle.avgHrv, restored.avgHrv)
+            XCTAssertEqual(idle.recovery, restored.recovery)
+            let idleGap = try await showsLegacyGap(idle, store: store, owner: active)
+            XCTAssertFalse(idleGap, "a cache hit must not revive the explanation")
+
+        }
+    }
+
     // A completed night relative to the test's local day, using the established HR-only sleep fixture.
     private func night() -> (day: String, hr: [HRSample], rr: [RRInterval]) {
         let start = Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970) - 86_400
@@ -110,14 +191,27 @@ final class IntelligenceRRSourceTests: XCTestCase {
             let registry = DeviceRegistryStore(dbQueue: store.registryWriter)
             try register(registry, canonicalModel: "4.0")
             let input = night()
-            _ = try await store.insert(Streams(hr: input.hr, rr: input.rr), deviceId: canonical)
+            try await seedBaseline(store, before: input.day)
+            _ = try await store.insert(Streams(hr: input.hr), deviceId: canonical)
             let repo = Repository(deviceId: active)
             repo.setStoreForTesting(store)
             let engine = IntelligenceEngine(repo: repo, profile: ProfileStore(), deviceId: canonical)
             await engine.analyzeRecent(maxDays: 2, force: true)
+            let emptyRows = try await store.dailyMetrics(deviceId: canonical + "-noop", from: input.day, to: input.day)
+            let empty = try XCTUnwrap(emptyRows.first)
+            XCTAssertNil(empty.avgHrv)
+            XCTAssertNil(empty.recovery)
+            let emptyGap = try await showsLegacyGap(empty, store: store, owner: canonical)
+            XCTAssertFalse(emptyGap)
+            _ = try await store.insert(Streams(rr: input.rr), deviceId: canonical)
+            await engine.analyzeRecent(maxDays: 2, force: true)
             let rows = try await store.dailyMetrics(deviceId: canonical + "-noop",
                 from: input.day, to: input.day)
-            XCTAssertGreaterThan(try XCTUnwrap(rows.first?.avgHrv), 0)
+            let scored = try XCTUnwrap(rows.first)
+            XCTAssertGreaterThan(try XCTUnwrap(scored.avgHrv), 0)
+            XCTAssertNotNil(scored.recovery)
+            let gap = try await showsLegacyGap(scored, store: store, owner: canonical)
+            XCTAssertFalse(gap, "WHOOP 4 legacy beats remain supported")
         }
     }
 
