@@ -36,6 +36,7 @@ final class Whoop5PairedRRTests: XCTestCase {
             // confirms transport parity (same raw words, different conversion gives different ms).
             let standard = try XCTUnwrap(StandardHeartRate.parse(standardBytes))
             XCTAssertNotEqual(standard.rr, rawTicks, "standard parser converts; WHOOP 5 words are already ms")
+            XCTAssertEqual(standard.rrRawTicks, rawTicks, "raw ticks match the native channel's raw words")
             let streams = pair.kind == "v18"
                 ? extractHistoricalStreams([native], deviceClockRef: 0, wallClockRef: 0)
                 : extractStreams([native], deviceClockRef: 0, wallClockRef: 0)

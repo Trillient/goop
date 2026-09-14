@@ -8387,13 +8387,13 @@ class WhoopBleClient(
 
         val rr = mutableListOf<Int>()
         if (rrPresent) {
+            val isWhoop5 = connectedFamily == DeviceFamily.WHOOP5
             while (idx + 1 < data.size) {
                 val raw = (data[idx].toInt() and 0xFF) or ((data[idx + 1].toInt() and 0xFF) shl 8)
                 idx += 2
-                // Convert 1/1024 s units to milliseconds (matches the WHOOP store's R-R in ms). ROUNDED,
-                // byte-identical to StandardHeartRate.parse + the Swift twin; plain integer division
-                // truncated, diverging up to ~0.5 ms per interval into RMSSD/HRV. (ryanbr, #1032)
-                rr.add(Math.round(raw / 1024.0 * 1000.0).toInt())
+                // WHOOP 5 sends milliseconds directly on 0x2A37 (non-compliant with BLE spec's
+                // 1/1024-s unit). For other devices, convert per spec.
+                rr.add(if (isWhoop5) raw else Math.round(raw / 1024.0 * 1000.0).toInt())
             }
         }
 

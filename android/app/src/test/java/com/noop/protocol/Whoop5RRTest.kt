@@ -79,6 +79,7 @@ class Whoop5RRTest {
             assertEquals(raw, parsed["rr_intervals"])
             // Standard BLE parser still applies 1/1024 conversion — wrong for this strap.
             assertNotEquals(raw, standard.rr)
+            assertEquals(raw, standard.rrRawTicks)
             val intervals = if (historical)
                 extractHistoricalStreams(listOf(nativeBytes), 0, 0, DeviceFamily.WHOOP5).rr.map { it.rrMs }
             else extractStreams(listOf(frame), 0, 0).rr.map { it.rrMs }
