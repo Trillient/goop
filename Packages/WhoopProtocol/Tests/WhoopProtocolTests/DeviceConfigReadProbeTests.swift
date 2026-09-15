@@ -193,6 +193,35 @@ final class DeviceConfigReadProbeTests: XCTestCase {
         XCTAssertEqual(report.verdict,
                        "1 of 2 read verbs answered, but no successful reply carried a verified key/value pair; no value is claimed")
     }
+
+    func testReportDoesNotPresentAFailedReadAsAStoredValue() {
+        // Guard-only: uses nothing this change added, so dropping the result-code check fails an
+        // assertion here rather than the build. The FAILURE and SUCCESS frames carry identical records.
+        let record = echoRecord("enable_rocky2", value: 0)
+        func report(result: UInt8) -> DeviceConfigReadProbeReport {
+            let frame = whoop5Response(cmd: 128, payload: payload(result: result, record: record))
+            guard case .success(let reply) = DeviceConfigReadProbe.parse(frame: frame, family: .whoop5,
+                                                                       expecting: 128) else {
+                XCTFail("the response is valid framing even when the read failed")
+                return DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: [], candidateKeys: [])
+            }
+            XCTAssertEqual(reply.value(for: "enable_rocky2"), 0,
+                           "the fixture must be the dangerous shape: key echoed, zero byte after the field")
+            var report = DeviceConfigReadProbeReport(family: .whoop5, knownFlagKeys: [], candidateKeys: [])
+            report.noteReply(reply, for: .init(opcode: 128, key: "enable_rocky2", group: .knownFlag))
+            return report
+        }
+
+        let failed = report(result: 0)
+        XCTAssertEqual(failed.readings.count, 1, "the rejected read is still recorded")
+        XCTAssertEqual(failed.readings.first?.resultCode, 0)
+        XCTAssertNil(failed.readings.first?.value, "a FAILURE reply must not be reported as a stored 0")
+        XCTAssertFalse(failed.render().contains("value="))
+
+        let succeeded = report(result: 1)
+        XCTAssertEqual(succeeded.readings.first?.value, 0, "a SUCCESS reply holding 0 is still a real 0")
+        XCTAssertTrue(succeeded.render().contains("value=0x00"))
+    }
     #endif
 
     func testNoValueIsClaimedWhenTheReplyDoesNotEchoTheKey() {
