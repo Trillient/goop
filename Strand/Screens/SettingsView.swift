@@ -2680,6 +2680,27 @@ struct SettingsView: View {
                 }
                 .buttonStyle(LiquidPressStyle())
                 .accessibilityLabel("Open Backup and Sync to a folder")
+
+                #if os(iOS)
+                NavigationLink {
+                    SelfHostedPushView()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.up.circle")
+                            .accessibilityHidden(true)
+                        Text("Self-hosted export…")
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .accessibilityHidden(true)
+                    }
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.accent)
+                }
+                .buttonStyle(LiquidPressStyle())
+                .accessibilityLabel("Open self-hosted export settings")
+                #endif
             }
         }
     }

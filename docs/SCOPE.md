@@ -50,7 +50,7 @@ and configures. It remains in scope only while all of these boundaries hold:
 
 - With no endpoint configured, it never runs: no network egress and no change to current battery,
   screens, scores, or local behaviour.
-- It runs in an independent background job after a successful strap offload. Receiver latency,
+- On iOS and Android it runs in an independent background job after a successful strap offload. Receiver latency,
   failure, or misconfiguration must never delay or interfere with the strap sync path.
 - It only exports rows. NOOP does not fetch rows, commands, settings, URLs, schemas, or conflict
   decisions from the receiver; the local on-device database remains the sole authority. The receiver

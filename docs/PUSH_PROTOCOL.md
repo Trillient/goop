@@ -1,13 +1,11 @@
 # Self-hosted push protocol
 
 This document specifies the wire contract for NOOP's **Experimental**, default-off export to a
-user-owned HTTP(S) endpoint. Protocol version **1.0** covers the Android-first client. It is a
-one-way export protocol: the on-device database is authoritative, the receiver acknowledges writes
-and may advertise only which fixed v1 streams it accepts. NOOP never reads health data, commands,
-URLs, field names, or other configuration back from the receiver.
+user-owned HTTP(S) endpoint. Protocol version **1.0** covers incremental stream upload. The
+server-authoritative mode additionally uploads the complete `.noopbak` database snapshot to the
+receiver's configured backup endpoint; the app does not merge remote records back into its local cache.
 
-NOOP does not ship, operate, or endorse a receiver. A receiver is not part of this repository, and
-this contract must not be interpreted as an account, hosted-sync, restore, or two-way-sync API.
+NOOP does not ship, operate, or endorse a receiver. A receiver is not part of this repository.
 
 ## Transport and authentication
 
@@ -53,6 +51,19 @@ There is no implicit capability fallback: `404`, `405`, a missing version respon
 capability document send no health data. Transport failures, `408`, `429`, and `5xx` are retryable and
 send no batch in that attempt; other failures are visible protocol/configuration errors. Redirects are
 never followed and the bearer token is never forwarded.
+
+## Complete server-authoritative snapshot
+
+Receivers that expose the NOOP backup endpoint accept a complete `.noopbak`/SQLite snapshot at
+`POST /api/backup` using the same bearer token. The endpoint is intentionally separate from the
+structured `/noop-sync` capability and batch endpoint. The client sends the checkpointed database
+bytes with `Content-Type: application/octet-stream`, then treats any 2xx response as acceptance.
+`GET /api/backup` returns bounded metadata, and `GET /api/backup/latest` downloads the latest
+validated artifact with the same bearer token. This snapshot includes tables outside the v1 structured registry, including raw captures, imports,
+metric series, lab records, and future schema additions. The receiver is the canonical copy for
+external readers and operators. The iOS Settings screen exposes an explicit restore action; it validates
+the downloaded archive and swaps the local database only after successful validation, then requires a
+relaunch. App launch never overwrites a non-empty local database automatically.
 
 Batch delivery then uses:
 

@@ -102,6 +102,25 @@ struct StrandiOSApp: App {
         RescoreBackgroundScheduler.register { [weak model] in
             await model?.runDeferredRescoreIfOwed()
         }
+        SelfHostedPushBackgroundScheduler.register { [weak model] in
+            guard let model else { return false }
+            switch await model.runSelfHostedPush() {
+            case .accepted, .noData: return true
+            case .rejected: return false
+            }
+        }
+        Task { @MainActor in
+            guard model.selfHostedPushSettings.snapshot.enabled,
+                  await !model.selfHostedPushHasLocalData() else { return }
+            switch await model.restoreSelfHostedPushBackup() {
+            case .restored:
+                // The imported database is reopened on the next app launch. Do not mutate the live store
+                // handle here; this path is only for a genuinely empty first run after reinstall.
+                break
+            default:
+                break
+            }
+        }
         let bridge = HealthKitBridge(
             repo: model.repo,
             appleDeviceId: model.appleDeviceId,
@@ -320,6 +339,9 @@ struct StrandiOSApp: App {
         // safe no-op until the user opts in.
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
+                if model.selfHostedPushSettings.snapshot.enabled {
+                    SelfHostedPushBackgroundScheduler.schedule()
+                }
                 model.drainPendingIntents(router: router)
                 // Re-arm the strap's smart alarm on foreground: the firmware alarm is a single instant
                 // and iOS can't re-arm it while suspended, so it would otherwise fire once and stop.
@@ -357,6 +379,9 @@ struct StrandiOSApp: App {
                     await watch.pushLatest(from: model)
                 }
             } else if phase == .background {
+                if model.selfHostedPushSettings.snapshot.enabled {
+                    SelfHostedPushBackgroundScheduler.schedule()
+                }
                 // Re-submit on every transition because iOS may discard an old best-effort request.
                 HealthWritebackBackgroundScheduler.updateSchedule(
                     isAuthorized: health.auth == .authorized)

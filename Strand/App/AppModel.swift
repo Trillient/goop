@@ -54,6 +54,9 @@ final class AppModel: ObservableObject {
     let profile = ProfileStore()
     /// Behaviour settings: double-tap action, wear automation, zone coaching, smart alarm, illness watch.
     let behavior = BehaviorStore()
+    /// Default-off, user-owned receiver export. The settings object is shared by Settings, automatic
+    /// post-offload delivery, and the iOS background task so they cannot disagree about credentials or state.
+    let selfHostedPushSettings = SelfHostedPushSettings()
     /// On-device WHOOP-style recovery/strain/sleep computation from raw strap streams.
     let intelligence: IntelligenceEngine
 
@@ -210,6 +213,7 @@ final class AppModel: ObservableObject {
     private var readSpineCancellable: AnyCancellable?
     /// Daily re-arm timer for the single-instant firmware smart alarm (see scheduleDailySmartAlarmRearm).
     private var smartAlarmRearmTimer: Timer?
+    private var selfHostedPushTask: Task<SelfHostedPushResult, Never>?
 
     init() {
         let live = LiveState()
@@ -727,7 +731,70 @@ final class AppModel: ObservableObject {
         // raced the data it was meant to publish and last night's sleep reached Health an app-open late.
         // Set by StrandiOSApp; nil on macOS and in tests, where there is no bridge.
         await healthWriteBack?()
+        // Receiver delivery is deliberately detached from the offload/refresh path. A slow or unavailable
+        // receiver must never extend the Bluetooth completion work or delay the local dashboard refresh.
+        startSelfHostedPushIfEnabled()
         #endif
+    }
+
+    /// Runs one serialized, bounded receiver export. Opening the local store happens inside this task and
+    /// capability discovery still precedes all health-data reads. Callers may await the result for explicit
+    /// UI actions; automatic triggers use `startSelfHostedPushIfEnabled()` instead.
+    func runSelfHostedPush() async -> SelfHostedPushResult {
+        if let task = selfHostedPushTask { return await task.value }
+        guard selfHostedPushSettings.snapshot.enabled,
+              selfHostedPushSettings.snapshot.endpoint != nil,
+              selfHostedPushSettings.token != nil else {
+            return .rejected(.init(code: .localData, status: nil, receiverCode: nil))
+        }
+        selfHostedPushSettings.record(state: .running, error: nil)
+        let settings = selfHostedPushSettings
+        let repo = self.repo
+        let task = Task { () -> SelfHostedPushResult in
+            await SelfHostedPushRunner(settings: settings, storeHandle: { await repo.storeHandle() }).run()
+        }
+        selfHostedPushTask = task
+        let result = await task.value
+        selfHostedPushTask = nil
+        switch result {
+        case .accepted(let records, let batches):
+            settings.record(state: .complete, error: nil)
+            settings.addAccepted(batches: batches, records: records)
+        case .noData:
+            settings.record(state: .complete, error: nil)
+        case .rejected(let failure):
+            settings.record(state: .failed, error: selfHostedPushErrorText(failure))
+        }
+        return result
+    }
+
+    /// Fire-and-forget automatic delivery. The task is coalesced with an explicit Export now action and is
+    /// intentionally not awaited by BLE/backfill completion.
+    func startSelfHostedPushIfEnabled() {
+        guard selfHostedPushSettings.snapshot.enabled else { return }
+        Task { [weak self] in _ = await self?.runSelfHostedPush() }
+    }
+
+    /// Restore the server's latest complete snapshot. This is intentionally explicit: a non-empty local
+    /// database is never overwritten during app launch, reinstall, or account/token configuration.
+    func restoreSelfHostedPushBackup() async -> SelfHostedPushRestoreResult {
+        guard let endpoint = selfHostedPushSettings.snapshot.endpoint,
+              SelfHostedPush.isBackupEndpoint(endpoint) else { return .unavailable }
+        if let volume = await repo.dataVolumeSnapshot(), volume.dbRows > 0 {
+            return .failed(SelfHostedPushFailure(code: .localData, status: nil,
+                                                 receiverCode: "local_database_not_empty"))
+        }
+        return await SelfHostedPushRunner(settings: selfHostedPushSettings).restoreLatestBackup()
+    }
+
+    func selfHostedPushHasLocalData() async -> Bool {
+        (await repo.dataVolumeSnapshot()?.dbRows ?? 0) > 0
+    }
+
+    private func selfHostedPushErrorText(_ failure: SelfHostedPushFailure) -> String {
+        let status = failure.status.map { " (HTTP \($0))" } ?? ""
+        let code = failure.receiverCode.map { ": \($0)" } ?? ""
+        return "Export failed: \(failure.code.rawValue)\(status)\(code)."
     }
 
     /// Fold a fresh reading into the smoothing window and republish a stable bpm.

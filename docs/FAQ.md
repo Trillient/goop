@@ -49,7 +49,7 @@ into something diagnosable.
 
 No, unless you export it yourself or explicitly enable an optional network path. NOOP operates no
 servers, accounts, telemetry, or cloud sync. The AI Coach sends a compact summary only when you ask
-it a question. Android's Experimental self-hosted push can send fresh database rows after offload,
+it a question. The Experimental self-hosted push can send fresh database rows after offload,
 at app-launch catch-up, or when the user explicitly selects **Export now**,
 but is off until you configure your own endpoint and bearer token; it is one-way and never reads
 records back. A receiver may only advertise which fixed protocol streams it accepts. A source-built
@@ -59,7 +59,7 @@ These exports can carry your data off-device **when you choose to use them**:
 
 - a `.noopbak` backup, which is a copy of the whole local database
 - the CSV/JSON export
-- the default-off Experimental self-hosted push on Android, to an endpoint you own
+- the default-off Experimental self-hosted push on iOS or Android, to an endpoint you own
 
 The first two are user-initiated actions; self-hosted push is a standing instruction you explicitly
 configure and can turn off. See [PRIVACY_SECURITY.md](PRIVACY_SECURITY.md).

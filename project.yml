@@ -294,6 +294,8 @@ targets:
           # #1538: finishes a re-score that a backgrounded offload started and could not complete. The
           # only BGProcessingTask of the three; the other two are refresh tasks.
           - $(PRODUCT_BUNDLE_IDENTIFIER).rescore
+          # Best-effort network fallback for the opt-in, user-owned receiver export.
+          - $(PRODUCT_BUNDLE_IDENTIFIER).selfhostedpush
         NSBluetoothAlwaysUsageDescription: "NOOP connects directly to your WHOOP strap over Bluetooth to read heart rate, R-R intervals, battery, and sensor data locally on your iPhone. Nothing leaves your device."
         NSLocationWhenInUseUsageDescription: "NOOP records your route during an outdoor workout to show distance, pace, and a map, and keeps recording while the screen is off. The route stays on your device. Nothing leaves it."
         NSHealthShareUsageDescription: "NOOP reads your own Apple Health data on-device to compute recovery, strain, and sleep. Nothing leaves your device."
@@ -355,11 +357,12 @@ targets:
       - package: ZIPFoundation
       - package: PolarProtocol
       - target: NOOPiOSWidgets
+      # Embed the watchOS app so the iPhone app carries it (NOOP.app/Watch/NOOPWatch.app).
+      - target: NOOPWatch
       # Embed the watchOS app so the iPhone app carries it (NOOP.app/Watch/NOOPWatch.app). A watch app
       # installs by riding inside its iOS companion; without this it would never reach a paired watch.
       # Build-from-source delivers it for certain; sideload install of the embedded watch app under a free
       # Apple ID is unproven (an Apple limitation), so the docs steer watch users to a source build for now.
-      - target: NOOPWatch
 
   # WidgetKit + Live Activity extension — the iOS analogue of the macOS menu-bar
   # extra. Reads a tiny snapshot the app publishes into the shared App Group.
